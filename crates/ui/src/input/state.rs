@@ -5,11 +5,11 @@
 use anyhow::Result;
 use gpui::{
     Action, App, AppContext, Bounds, ClipboardItem, Context, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString, Styled as _,
-    Subscription, Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _,
-    px,
+    EventEmitter, FocusHandle, Focusable, HighlightStyle, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine,
+    SharedString, Styled as _, Subscription, Task, UTF16Selection, Window, actions, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui::{Half, TextAlign};
 use ropey::{Rope, RopeSlice};
@@ -312,6 +312,10 @@ pub struct InputState {
     pub(super) selection_reversed: bool,
     /// The marked range is the temporary insert text on IME typing.
     pub(super) ime_marked_range: Option<Selection>,
+    /// Host-supplied byte ranges rendered with extra highlight styles
+    /// (e.g. mention/keyword highlighting), merged with syntax and
+    /// diagnostic styles at paint time. Document byte offsets.
+    pub(super) highlighted_ranges: Vec<(std::ops::Range<usize>, HighlightStyle)>,
     pub(super) last_layout: Option<LastLayout>,
     pub(super) last_cursor: Option<usize>,
     /// The input container bounds
@@ -430,6 +434,7 @@ impl InputState {
             selected_word_range: None,
             selection_reversed: false,
             ime_marked_range: None,
+            highlighted_ranges: Vec::new(),
             input_bounds: Bounds::default(),
             selecting: false,
             disabled: false,
@@ -646,6 +651,21 @@ impl InputState {
     #[inline]
     pub fn diagnostics_mut(&mut self) -> Option<&mut DiagnosticSet> {
         self.mode.diagnostics_mut()
+    }
+
+    /// Replace the host-supplied highlight ranges (document byte
+    /// offsets). Works in every input mode; ranges are clipped to the
+    /// visible text at paint time.
+    pub fn set_highlighted_ranges(
+        &mut self,
+        ranges: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.highlighted_ranges == ranges {
+            return;
+        }
+        self.highlighted_ranges = ranges;
+        cx.notify();
     }
 
     /// Set placeholder

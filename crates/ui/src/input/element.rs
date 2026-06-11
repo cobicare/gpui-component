@@ -860,9 +860,8 @@ impl TextElement {
 
         // Second pass: create and prepaint icons
         let line_height = last_layout.line_height;
-        let line_number_width = last_layout.line_number_width
-            - LINE_NUMBER_RIGHT_MARGIN
-            - FOLD_ICON_HITBOX_WIDTH;
+        let line_number_width =
+            last_layout.line_number_width - LINE_NUMBER_RIGHT_MARGIN - FOLD_ICON_HITBOX_WIDTH;
         let icon_relative_pos = point(
             (FOLD_ICON_HITBOX_WIDTH - FOLD_ICON_WIDTH).half(),
             (line_height - FOLD_ICON_WIDTH).half(),
@@ -1056,13 +1055,36 @@ impl TextElement {
         let text = &state.text;
         let is_multi_line = state.mode.is_multi_line();
 
+        // Host-supplied highlight ranges, clipped to the visible text.
+        let custom_styles: Vec<(Range<usize>, HighlightStyle)> = state
+            .highlighted_ranges
+            .iter()
+            .filter_map(|(range, style)| {
+                let start = range
+                    .start
+                    .clamp(visible_byte_range.start, visible_byte_range.end);
+                let end = range
+                    .end
+                    .clamp(visible_byte_range.start, visible_byte_range.end);
+                (start < end).then_some((start..end, *style))
+            })
+            .collect();
+
         let (mut highlighter, diagnostics) = match &state.mode {
             InputMode::CodeEditor {
                 highlighter,
                 diagnostics,
                 ..
             } => (highlighter.borrow_mut(), diagnostics),
-            _ => return None,
+            _ => {
+                if custom_styles.is_empty() {
+                    return None;
+                }
+                // Plain inputs have no syntax tiling; build one so
+                // the run builder still covers every visible byte.
+                let base = vec![(visible_byte_range.clone(), HighlightStyle::default())];
+                return Some(gpui::combine_highlights(custom_styles, base).collect());
+            }
         };
         let highlighter = highlighter.as_mut()?;
 
@@ -1128,6 +1150,9 @@ impl TextElement {
 
         // Combine marker styles
         styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
+        if !custom_styles.is_empty() {
+            styles = gpui::combine_highlights(custom_styles, styles).collect();
+        }
 
         Some(styles)
     }
@@ -1183,7 +1208,10 @@ impl IntoElement for TextElement {
 
 /// A debug function to print points as SVG path.
 #[allow(unused)]
-fn print_points_as_svg_path(line_corners: &Vec<gpui::Corners<Pixels>>, points: &Vec<Point<Pixels>>) {
+fn print_points_as_svg_path(
+    line_corners: &Vec<gpui::Corners<Pixels>>,
+    points: &Vec<Point<Pixels>>,
+) {
     for corners in line_corners {
         println!(
             "tl: ({}, {}), tr: ({}, {}), bl: ({}, {}), br: ({}, {})",
@@ -1605,7 +1633,8 @@ impl Element for TextElement {
         let hover_definition_hitbox = self.layout_hover_definition_hitbox(state, window, cx);
         let indent_guides_path =
             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
-        let fold_icon_layout = self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
+        let fold_icon_layout =
+            self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
 
         PrepaintState {
             bounds,
