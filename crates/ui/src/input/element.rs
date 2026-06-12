@@ -1055,6 +1055,14 @@ impl TextElement {
         let text = &state.text;
         let is_multi_line = state.mode.is_multi_line();
 
+        // An empty document renders the placeholder, which is longer
+        // than the document itself — syntax/diagnostic runs computed
+        // for the empty text would not cover it and break shaping.
+        // Let the default single-run path style the placeholder.
+        if text.len() == 0 {
+            return None;
+        }
+
         // Host-supplied highlight ranges, clipped to the visible text.
         let custom_styles: Vec<(Range<usize>, HighlightStyle)> = state
             .highlighted_ranges

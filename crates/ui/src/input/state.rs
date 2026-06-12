@@ -2641,6 +2641,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_code_editor_placeholder_renders_and_typing_works(cx: &mut TestAppContext) {
+        // Regression: a non-empty placeholder on a code-editor input
+        // previously shaped placeholder text against highlight runs
+        // computed for the EMPTY document, breaking the first paint.
+        let mut input: Option<Entity<InputState>> = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(Theme::default());
+                super::super::init(cx);
+                input = Some(cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder("Describe a task — try \"use codex\"")
+                        .placeholder_color(gpui::hsla(0.0, 0.0, 0.5, 0.5))
+                        .code_editor("markdown")
+                        .line_number(false)
+                        .soft_wrap(true)
+                }));
+                cx.new(|cx| crate::Root::new(input.clone().unwrap(), window, cx))
+            })
+            .unwrap()
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let input = input.unwrap();
+
+        // First frames with the placeholder visible must not break.
+        cx.run_until_parked();
+
+        // Typing must insert.
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.focus(window, cx);
+            });
+        });
+        cx.simulate_keystrokes("d e s i g n");
+        cx.run_until_parked();
+        let value = cx.update(|_, cx| input.read_with(cx, |state, _| state.value().to_string()));
+        assert_eq!(value, "design", "typed text must land in the input");
+    }
+
+    #[gpui::test]
     fn test_highlighting_preserved_after_fold(cx: &mut TestAppContext) {
         use crate::highlighter::HighlightTheme;
         use crate::input::display_map::FoldRange;
