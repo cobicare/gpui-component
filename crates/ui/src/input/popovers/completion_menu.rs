@@ -229,6 +229,14 @@ impl CompletionMenu {
         let offset = self.offset;
         let item = item.clone();
         let mut range = self.trigger_start_offset.unwrap_or(self.offset)..self.offset;
+        tracing::warn!(
+            menu_offset = self.offset,
+            trigger_start = ?self.trigger_start_offset,
+            default_range = ?range,
+            text_edit = ?item.text_edit,
+            insert_text = ?item.insert_text,
+            "completion select_item (debug instrumentation)"
+        );
 
         let editor = self.editor.clone();
 
@@ -255,6 +263,12 @@ impl CompletionMenu {
                     range = offset..offset;
                 }
 
+                tracing::warn!(
+                    applied_range = ?range,
+                    new_text = %new_text,
+                    buffer_len = editor.text.len(),
+                    "completion apply (debug instrumentation)"
+                );
                 editor.replace_text_in_range_silent(
                     Some(editor.range_to_utf16(&range)),
                     &new_text,
