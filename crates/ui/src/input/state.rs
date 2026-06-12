@@ -316,6 +316,8 @@ pub struct InputState {
     /// (e.g. mention/keyword highlighting), merged with syntax and
     /// diagnostic styles at paint time. Document byte offsets.
     pub(super) highlighted_ranges: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    /// Overrides the theme's `muted_foreground` for placeholder text.
+    pub(super) placeholder_color: Option<gpui::Hsla>,
     pub(super) last_layout: Option<LastLayout>,
     pub(super) last_cursor: Option<usize>,
     /// The input container bounds
@@ -435,6 +437,7 @@ impl InputState {
             selection_reversed: false,
             ime_marked_range: None,
             highlighted_ranges: Vec::new(),
+            placeholder_color: None,
             input_bounds: Bounds::default(),
             selecting: false,
             disabled: false,
@@ -666,6 +669,15 @@ impl InputState {
         }
         self.highlighted_ranges = ranges;
         cx.notify();
+    }
+
+    /// Override the placeholder text color (defaults to the theme's
+    /// `muted_foreground`). The placeholder renders inside the input's
+    /// own text pipeline, so it always aligns with the caret and typed
+    /// text — unlike host-side overlay hacks.
+    pub fn placeholder_color(mut self, color: impl Into<gpui::Hsla>) -> Self {
+        self.placeholder_color = Some(color.into());
+        self
     }
 
     /// Set placeholder
