@@ -1064,7 +1064,7 @@ impl TextElement {
         }
 
         // Host-supplied highlight ranges, clipped to the visible text.
-        let custom_styles: Vec<(Range<usize>, HighlightStyle)> = state
+        let highlight_styles: Vec<(Range<usize>, HighlightStyle)> = state
             .highlighted_ranges
             .iter()
             .filter_map(|(range, style)| {
@@ -1077,6 +1077,38 @@ impl TextElement {
                 (start < end).then_some((start..end, *style))
             })
             .collect();
+
+        // Host-supplied link ranges underline at paint time. Underline
+        // is the only field set, so a link that is also highlighted
+        // keeps its highlight color when the styles are combined.
+        let link_style = HighlightStyle {
+            underline: Some(UnderlineStyle {
+                thickness: px(1.),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let link_styles: Vec<(Range<usize>, HighlightStyle)> = state
+            .link_ranges
+            .iter()
+            .filter_map(|range| {
+                let start = range
+                    .start
+                    .clamp(visible_byte_range.start, visible_byte_range.end);
+                let end = range
+                    .end
+                    .clamp(visible_byte_range.start, visible_byte_range.end);
+                (start < end).then_some((start..end, link_style))
+            })
+            .collect();
+
+        let custom_styles: Vec<(Range<usize>, HighlightStyle)> = if link_styles.is_empty() {
+            highlight_styles
+        } else if highlight_styles.is_empty() {
+            link_styles
+        } else {
+            gpui::combine_highlights(link_styles, highlight_styles).collect()
+        };
 
         let (mut highlighter, diagnostics) = match &state.mode {
             InputMode::CodeEditor {
@@ -1184,6 +1216,7 @@ pub(super) struct PrepaintState {
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
     hover_definition_hitbox: Option<Hitbox>,
+    hovered_link_hitbox: Option<Hitbox>,
     indent_guides_path: Option<Path<Pixels>>,
     bounds: Bounds<Pixels>,
     /// Fold icon layout data
@@ -1641,6 +1674,13 @@ impl Element for TextElement {
         };
 
         let hover_definition_hitbox = self.layout_hover_definition_hitbox(state, window, cx);
+        // Pointing-hand hitbox for the link range currently hovered
+        // with the platform modifier held (set by `on_mouse_move`).
+        let hovered_link_hitbox = state
+            .hovered_link_range
+            .as_ref()
+            .and_then(|range| state.range_to_bounds(range))
+            .map(|bounds| window.insert_hitbox(bounds, HitboxBehavior::Normal));
         let indent_guides_path =
             self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
         let fold_icon_layout =
@@ -1658,6 +1698,7 @@ impl Element for TextElement {
             search_match_paths,
             hover_highlight_path,
             hover_definition_hitbox,
+            hovered_link_hitbox,
             document_color_paths,
             indent_guides_path,
             fold_icon_layout,
@@ -1940,6 +1981,10 @@ impl Element for TextElement {
 
         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref() {
             window.set_cursor_style(gpui::CursorStyle::PointingHand, &hitbox);
+        }
+
+        if let Some(hitbox) = prepaint.hovered_link_hitbox.as_ref() {
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
         }
 
         // Paint inline completion first line suffix (after cursor on same line)

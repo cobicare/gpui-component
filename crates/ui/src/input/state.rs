@@ -97,9 +97,18 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool },
+    PressEnter {
+        secondary: bool,
+    },
     Focus,
     Blur,
+    /// A host-supplied link range (see [`InputState::set_link_ranges`])
+    /// was clicked with the platform modifier held. Document byte
+    /// offsets of the clicked range; the host resolves it against the
+    /// current value.
+    LinkClicked {
+        range: std::ops::Range<usize>,
+    },
 }
 
 pub(super) const CONTEXT: &str = "Input";
@@ -316,6 +325,14 @@ pub struct InputState {
     /// (e.g. mention/keyword highlighting), merged with syntax and
     /// diagnostic styles at paint time. Document byte offsets.
     pub(super) highlighted_ranges: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    /// Host-supplied byte ranges that behave like links: underlined at
+    /// paint time (composed with `highlighted_ranges` styles) and
+    /// clickable with the platform modifier held, emitting
+    /// [`InputEvent::LinkClicked`]. Document byte offsets.
+    pub(super) link_ranges: Vec<std::ops::Range<usize>>,
+    /// Link range currently under the pointer with the platform
+    /// modifier held; drives the pointing-hand cursor affordance.
+    pub(super) hovered_link_range: Option<std::ops::Range<usize>>,
     /// Overrides the theme's `muted_foreground` for placeholder text.
     pub(super) placeholder_color: Option<gpui::Hsla>,
     pub(super) last_layout: Option<LastLayout>,
@@ -437,6 +454,8 @@ impl InputState {
             selection_reversed: false,
             ime_marked_range: None,
             highlighted_ranges: Vec::new(),
+            link_ranges: Vec::new(),
+            hovered_link_range: None,
             placeholder_color: None,
             input_bounds: Bounds::default(),
             selecting: false,
@@ -669,6 +688,47 @@ impl InputState {
         }
         self.highlighted_ranges = ranges;
         cx.notify();
+    }
+
+    /// Replace the host-supplied link ranges (document byte offsets).
+    /// Link ranges are underlined at paint time — composed with any
+    /// overlapping [`Self::set_highlighted_ranges`] styles — and a
+    /// platform-modifier click inside one emits
+    /// [`InputEvent::LinkClicked`] instead of moving the caret.
+    pub fn set_link_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>, cx: &mut Context<Self>) {
+        if self.link_ranges == ranges {
+            return;
+        }
+        self.link_ranges = ranges;
+        self.hovered_link_range = None;
+        cx.notify();
+    }
+
+    /// The link range containing `offset`, if any.
+    pub(super) fn link_range_at(&self, offset: usize) -> Option<std::ops::Range<usize>> {
+        self.link_ranges
+            .iter()
+            .find(|range| range.contains(&offset))
+            .cloned()
+    }
+
+    /// Emit [`InputEvent::LinkClicked`] for a platform-modifier left
+    /// click inside a link range. Returns true when handled (the
+    /// caller must not move the caret).
+    pub(super) fn handle_click_link_range(
+        &mut self,
+        event: &MouseDownEvent,
+        offset: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if event.button != MouseButton::Left || !event.modifiers.secondary() {
+            return false;
+        }
+        let Some(range) = self.link_range_at(offset) else {
+            return false;
+        };
+        cx.emit(InputEvent::LinkClicked { range });
+        true
     }
 
     /// Override the placeholder text color (defaults to the theme's
@@ -1414,6 +1474,10 @@ impl InputState {
             return;
         }
 
+        if self.handle_click_link_range(event, offset, cx) {
+            return;
+        }
+
         // Triple click to select line
         if event.button == MouseButton::Left && event.click_count >= 3 {
             self.select_line(offset, window, cx);
@@ -1475,6 +1539,19 @@ impl InputState {
 
         // Show diagnostic popover on mouse move
         let offset = self.index_for_mouse_position(event.position);
+
+        // Pointing-hand affordance for link ranges while the platform
+        // modifier is held (mirrors the hover-definition affordance).
+        let hovered_link = if event.modifiers.secondary() {
+            self.link_range_at(offset)
+        } else {
+            None
+        };
+        if self.hovered_link_range != hovered_link {
+            self.hovered_link_range = hovered_link;
+            cx.notify();
+        }
+
         self.handle_mouse_move(offset, event, window, cx);
 
         if self.mode.is_code_editor() {
@@ -2796,5 +2873,75 @@ ORDER BY id
              Before: {:?}\nAfter: {:?}",
             colored_before, colored_after
         );
+    }
+
+    #[gpui::test]
+    fn test_link_ranges_click_emits_link_clicked(cx: &mut TestAppContext) {
+        use gpui::Modifiers;
+        use std::{cell::RefCell, rc::Rc};
+
+        let input_view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        let text = "see https://example.com now";
+        let link = 4usize..23usize;
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+            });
+        });
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                state.set_link_ranges(vec![link.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let clicked: Rc<RefCell<Vec<std::ops::Range<usize>>>> = Rc::default();
+        cx.update(|_, cx| {
+            let clicked = clicked.clone();
+            cx.subscribe(&input, move |_, event: &InputEvent, _| {
+                if let InputEvent::LinkClicked { range } = event {
+                    clicked.borrow_mut().push(range.clone());
+                }
+            })
+            .detach();
+        });
+
+        let click = |modifiers: Modifiers| MouseDownEvent {
+            button: MouseButton::Left,
+            position: Default::default(),
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+
+        // Plain left click inside the link range must NOT be treated
+        // as a link click (the caret still moves normally).
+        let handled = cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                state.handle_click_link_range(&click(Modifiers::none()), 10, cx)
+            })
+        });
+        assert!(!handled, "plain click must not consume the mouse event");
+
+        // Platform-modifier click outside every link range is ignored.
+        let handled = cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                state.handle_click_link_range(&click(Modifiers::secondary_key()), 25, cx)
+            })
+        });
+        assert!(!handled, "click outside link ranges must not be consumed");
+
+        // Platform-modifier click inside the link range emits the event.
+        let handled = cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                state.handle_click_link_range(&click(Modifiers::secondary_key()), 10, cx)
+            })
+        });
+        assert!(handled, "modifier click on a link must be consumed");
+        cx.run_until_parked();
+        assert_eq!(clicked.borrow().as_slice(), &[link]);
     }
 }

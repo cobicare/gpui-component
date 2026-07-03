@@ -152,6 +152,7 @@ impl InputState {
 
     pub(crate) fn clear_hover_state(&mut self, cx: &mut Context<InputState>) {
         self.hover_definition.clear();
+        self.hovered_link_range = None;
         self.hover_popover = None;
         self.lsp._hover_task = Task::ready(Ok(()));
         cx.notify();
