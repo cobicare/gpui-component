@@ -2272,4 +2272,152 @@ mod tests {
         assert_eq!(result[4].color, gpui::black());
         assert_eq!(result[5].color, gpui::blue());
     }
+
+    /// Syntax + host highlight + link ranges must COMPOSE: syntax
+    /// colors survive outside the custom spans, custom colors win
+    /// inside their spans, links underline, and the returned styles
+    /// keep the run-builder invariant (sorted, non-overlapping,
+    /// contiguous tiling — the run builder consumes `range.len()`
+    /// sequentially, so a gap or overlap misaligns every later run).
+    #[cfg(feature = "tree-sitter-markdown")]
+    #[gpui::test]
+    fn test_highlight_lines_composes_syntax_custom_and_link_ranges(cx: &mut gpui::TestAppContext) {
+        use crate::input::InputState;
+        use crate::theme::Theme;
+        use gpui::{AppContext as _, VisualTestContext};
+
+        let mut input: Option<Entity<InputState>> = None;
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.set_global(Theme::default());
+                    super::super::init(cx);
+                    input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .code_editor("markdown")
+                            .line_number(false)
+                            .soft_wrap(true)
+                    }));
+                    cx.new(|cx| Root::new(input.clone().unwrap(), window, cx))
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let input = input.unwrap();
+
+        let text = "## heading\n\nsee https://example.com and #1179";
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| state.set_value(text, window, cx));
+        });
+        cx.run_until_parked();
+
+        let visible_lines: Vec<usize> = vec![0, 1, 2];
+        let byte_range = 0..text.len();
+        let snapshot = |cx: &mut VisualTestContext| -> Vec<(Range<usize>, HighlightStyle)> {
+            let entity = input.clone();
+            let lines = visible_lines.clone();
+            let range = byte_range.clone();
+            cx.update(move |_, cx| {
+                TextElement::new(entity)
+                    .highlight_lines(&lines, px(0.), range, cx)
+                    .unwrap_or_default()
+            })
+        };
+        let heading_colored = |styles: &[(Range<usize>, HighlightStyle)]| {
+            styles
+                .iter()
+                .any(|(range, style)| range.start < "## heading".len() && style.color.is_some())
+        };
+        let assert_tiling = |styles: &[(Range<usize>, HighlightStyle)], label: &str| {
+            let mut cursor = 0usize;
+            for (range, _) in styles {
+                assert_eq!(
+                    range.start, cursor,
+                    "{label}: styles must tile contiguously (run builder consumes \
+                     range.len() sequentially); got {styles:?}"
+                );
+                cursor = range.end;
+            }
+            assert!(
+                cursor >= text.len(),
+                "{label}: styles must cover the full text ({} of {}): {styles:?}",
+                cursor,
+                text.len()
+            );
+        };
+
+        // Baseline: markdown syntax colors the heading, full tiling.
+        let baseline = snapshot(&mut cx);
+        assert!(
+            heading_colored(&baseline),
+            "markdown syntax must color the heading before custom ranges: {baseline:?}"
+        );
+        assert_tiling(&baseline, "baseline");
+
+        // Mirror the host composer: highlight + link the URL and the
+        // issue ref (what jeeva's rich-text refresh pushes).
+        let url_start = text.find("https://example.com").expect("url in fixture");
+        let url_range = url_start..url_start + "https://example.com".len();
+        let issue_start = text.find("#1179").expect("issue ref in fixture");
+        let issue_range = issue_start..issue_start + "#1179".len();
+        let url_color = gpui::blue();
+        let issue_color = gpui::red();
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                state.set_highlighted_ranges(
+                    vec![
+                        (
+                            url_range.clone(),
+                            HighlightStyle {
+                                color: Some(url_color),
+                                ..Default::default()
+                            },
+                        ),
+                        (
+                            issue_range.clone(),
+                            HighlightStyle {
+                                color: Some(issue_color),
+                                ..Default::default()
+                            },
+                        ),
+                    ],
+                    cx,
+                );
+                state.set_link_ranges(vec![url_range.clone(), issue_range.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let styled = snapshot(&mut cx);
+
+        // 1. Syntax colors must survive the custom/link merge.
+        assert!(
+            heading_colored(&styled),
+            "markdown syntax must survive custom + link ranges: {styled:?}"
+        );
+        // 2. Run-builder invariant must hold with custom ranges set.
+        assert_tiling(&styled, "custom+links");
+        // 3. Custom highlight color wins inside its range.
+        let url_mid = url_range.start + 4;
+        assert!(
+            styled
+                .iter()
+                .any(|(range, style)| range.contains(&url_mid) && style.color == Some(url_color)),
+            "URL range must keep its host highlight color: {styled:?}"
+        );
+        let issue_mid = issue_range.start + 2;
+        assert!(
+            styled.iter().any(
+                |(range, style)| range.contains(&issue_mid) && style.color == Some(issue_color)
+            ),
+            "issue-ref range must keep its host highlight color: {styled:?}"
+        );
+        // 4. Link ranges underline.
+        assert!(
+            styled
+                .iter()
+                .any(|(range, style)| range.contains(&url_mid) && style.underline.is_some()),
+            "URL link range must underline: {styled:?}"
+        );
+    }
 }

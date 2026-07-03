@@ -704,6 +704,20 @@ impl InputState {
         cx.notify();
     }
 
+    /// The current host-supplied highlight ranges (document byte
+    /// offsets), as last set by [`Self::set_highlighted_ranges`].
+    /// Lets hosts assert their highlight model landed (tests) or diff
+    /// against a freshly computed model without caching it.
+    pub fn highlighted_ranges(&self) -> &[(std::ops::Range<usize>, HighlightStyle)] {
+        &self.highlighted_ranges
+    }
+
+    /// The current host-supplied link ranges (document byte offsets),
+    /// as last set by [`Self::set_link_ranges`].
+    pub fn link_ranges(&self) -> &[std::ops::Range<usize>] {
+        &self.link_ranges
+    }
+
     /// The link range containing `offset`, if any.
     pub(super) fn link_range_at(&self, offset: usize) -> Option<std::ops::Range<usize>> {
         self.link_ranges
